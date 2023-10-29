@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Kittens Carousel is a static website application deployed on AWS Simple Storage Service (S3), served through Cloudfront and Route 53 using AWS Cloudformation Service.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: mfaktas.com
+    Description: The website domain name.
+
+  PriceClass:
+    Type: String
+    Description: The CloudFront distribution price class
+    Default: "PriceClass_All"
+    AllowedValues:
+      - "PriceClass_100"
+      - "PriceClass_200"
+      - "PriceClass_All"
+
+  S3BucketName:
+    Type: String
+    Default: mfaktas.com
+    Description: S3 Bucket Name
+
+  HostedDnsZoneId:
+    Type: String
+    Default: Z04947094TWD4F581RIL
+    Description: Route53 hosted Zone ID
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: mfaktas.com
+      # For non-Route 53 options, drop the DomainValidationOptions
+      #      SubjectAlternativeNames:
+      #        - mfaktas.com
+      DomainValidationOptions:
+        - DomainName: mfaktas.com
+          HostedZoneId: !Ref HostedDnsZoneId
+      ValidationMethod: DNS
+
+  TheCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Ref DomainName
+        DefaultCacheBehavior:
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: the-s3-bucket
+          ViewerProtocolPolicy: allow-all
+        DefaultRootObject: index.html
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+        Enabled: true
+        HttpVersion: http2
+        Origins:
+          - DomainName: !Join ["", [!Ref TheBucket, ".s3.amazonaws.com"]]
+            Id: the-s3-bucket
+            S3OriginConfig:
+              OriginAccessIdentity:
+                !Join [
+                  "",
+                  [
+                    "origin-access-identity/cloudfront/",
+                    !Ref TheCloudFrontOriginAccessIdentity,
+                  ],
+                ]
+        PriceClass: !Ref PriceClass
+        ViewerCertificate:
+          #  AcmCertificateArn: !Ref AcmCertificateArn
+          AcmCertificateArn: !Ref Certificate
+          MinimumProtocolVersion: TLSv1
+          SslSupportMethod: sni-only
+      Tags:
+        - Key: Domain
+          Value: !Ref DomainName
+
+  TheCloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "CloudFront OAI for ${DomainName}"
+
+  TheBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName:
+        Ref: S3BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Domain
+          Value: !Ref DomainName
+
+  TheBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TheBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Join ["", ["arn:aws:s3:::", !Ref TheBucket, "/*"]]
+            Principal:
+              CanonicalUser: !GetAtt TheCloudFrontOriginAccessIdentity.S3CanonicalUserId
+
+  DNS:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedDnsZoneId
+      RecordSets:
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget:
+            HostedZoneId: Z2FDTNDATAQYW2
+            DNSName: !GetAtt
+              - TheCloudFrontDistribution
+              - DomainName
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt
+      - TheBucket
+      - WebsiteURL
+    Description: URL for website hosted on S3
+  S3BucketSecureURL:
+    Value: !Join
+      - ""
+      - - "https://"
+        - !GetAtt
+          - TheBucket
+          - DomainName
+    Description: Name of S3 bucket to hold website content
